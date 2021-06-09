@@ -1,0 +1,651 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(readr)
+library(asaur)
+library(survival)
+library(ggplot2)
+library(muhaz)
+library(parfm)
+data = read.csv("/Users/apple/Desktop/arrhythmia.csv")
+```
+
+```{r}
+#Process data
+sum(is.na(data))
+
+data$Sex[data$Sex=="M"]=1
+data$Sex[data$Sex=="F"]=0 #Male=1, Female=0
+data$Race=as.numeric(as.factor(data$Race)) #Afri Amer=1, Amer Indian=2, Asian=3, No answer=4, Other=5, white=6
+
+data$Diagnosis[data$Diagnosis=="Idiopathic"]=0
+data$Diagnosis[data$Diagnosis=="Ischemic"]=1
+data[,c(6:9,13:19)]=lapply(data[,c(6:9,13:19)], function(x) as.numeric(x=="Yes")) #"Yes"=1, "No"=0
+
+
+abnormal=data[data$tShock>data$tDeath,]#Detect the abnormal obs.
+#View(abnormal)
+data=data[data$tShock<=data$tDeath,]
+table(data$Race)
+group1=subset(data,data$dShock==1&data$dDeath==1&(data$tDeath-data$tShock)<=1/30) # the patients died within one day after shock.
+#View(group1)
+
+group2=subset(data,data$dShock==0&data$dDeath==1&(data$tDeath-data$tShock)<=1/100)
+#View(group2)# Shock time is censored but shock does not happen during a short time before the patient die, so it is likely that these patients did not die from shock.
+#group1 and group2 people don't need ICD.             
+
+group3=subset(data,data$dShock==1&(data$tDeath-data$tShock)>1/30)
+#View(group3) #The patients that shock happened and live longer than 1 day after shock. (Need ICD)
+
+
+censor=data[data$dShock==0&data$dDeath==0,] #For patients whose shock and death censored at almost the same time, we omit them since they may move out.
+#View(censor)
+censor2=censor[(censor$tDeath-censor$tShock)>=1/100,]
+#View(censor2)# For patients whose shock and death censored at different time, I don't know...
+
+library(dplyr)
+other=anti_join(data, group1)
+other=anti_join(other,group2)
+other=anti_join(other,group3)
+other=anti_join(other,censor)
+View(other)#Filter above obs from data, we get other
+
+
+class=rbind(group1,group2) #class contains the obs that can be classified
+class=rbind(class,group3)
+```
+
+descriptive analysis
+```{r}
+#descriptive statistics for all classified obs
+summary(class)
+table(class$Sex,class$Race)
+table(class$Diagnosis)
+
+#descriptive statistics for group1 obs
+summary(group1)
+table(group1$Sex,group1$Race)
+table(group1$Diagnosis)
+
+#descriptive statistics for group2 obs
+summary(group2)
+table(group2$Sex,group2$Race)
+table(group2$Diagnosis)
+
+#descriptive statistics for group3 obs
+summary(group3)
+table(group3$Sex,group3$Race)
+table(group3$Diagnosis)
+
+library(ggplot2)
+library(corrgram)
+data=sapply(data, as.numeric)
+#correlation
+corrgram(data[,-c(28,29,30,31)],order = FALSE,upper.panel = panel.cor,main="correlation matrix")
+cor(data[,-c(28,29,30,31)])
+#cor(Diagnosis, HxMI)=0.689, cor(SysBP,DiaBP)=0.56, cor(BUN,Creatinine)=0.577, cor(QRS,LVEF)=0.536
+
+#pca
+#standardize data
+dataz=scale(data[,-c(28,29,30,31)],center = T,scale = T)
+dataz=as.data.frame(dataz)
+pca=princomp(dataz)
+summary(pca,loadings=T)
+data=as.data.frame(data)
+
+#Consider what type of people need icd most ( The patients with high shock risk)
+library(survival)
+#age***
+##group the age
+summary(data$Age)
+data$Ageg[data$Age<56.0]=1
+data$Ageg[56.0<=data$Age&data$Age<64.0]=2
+data$Ageg[64.0<=data$Age&data$Age<72.0]=3
+data$Ageg[72.0<=data$Age]=4
+est_km_age=survfit(Surv(tShock, dShock) ~ strata(Ageg),data=data)
+plot(est_km_age,col=c("red","blue","green","dark green"), main = "KM estimate survival function for different ages")
+legend( "bottomleft",c("age1", "age2", "age3", "age4"),lty=1, col=c("red","blue","green","dark green")) 
+
+
+
+#different sex***
+est_km_sex=survfit(Surv(tShock, dShock) ~ strata(Sex),data=data)
+plot(est_km_sex,col=c("red","blue"), main = "KM estimate survival function for different sex")
+legend( "bottomleft",c("female", "male"),lty=1, col=c("red","blue")) 
+
+#race***
+est_km_race=survfit(Surv(tShock, dShock) ~ strata(Race),data=data)
+plot(est_km_race,col=c("red","blue","green","dark green","black","orange"), main = "KM estimate survival function for different races")
+legend( "bottomleft",c("AA", "AI", "AS", "NA","O","W"),lty=1, col=c("red","blue","green","dark green","black","orange")) 
+
+#diagonosis***
+est_km_diag=survfit(Surv(tShock, dShock) ~ strata(Diagnosis),data=data)
+plot(est_km_diag,col=c("red","blue"), main = "KM estimate survival function for different diagnosis")
+legend( "bottomleft",c("Idiopathic", "Ischemic"),lty=1, col=c("red","blue")) 
+
+#NYHA ***
+est_km_nyha=survfit(Surv(tShock, dShock) ~ strata(NYHA),data=data)
+plot(est_km_nyha,col=c("red","blue","green","dark green"), main = "KM estimate survival function for different NYHA")
+legend( "bottom",c("1", "2", "3", "4"),lty=1, col=c("red","blue","green","dark green")) 
+
+#HxMI
+est_km_hxmi=survfit(Surv(tShock, dShock) ~ strata(HxMI),data=data)
+plot(est_km_hxmi,col=c("red","blue"), main = "KM estimate survival function for different HxMI")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#Hxdiabetes
+est_km_hxdiabetes=survfit(Surv(tShock, dShock) ~ strata(HxDiabetes),data=data)
+plot(est_km_hxdiabetes,col=c("red","blue"), main = "KM estimate survival function for different HxDiabetes")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#HxHTN***
+est_km_hxhtn=survfit(Surv(tShock, dShock) ~ strata(HxHTN),data=data)
+plot(est_km_hxhtn,col=c("red","blue"), main = "KM estimate survival function for different HxHTN")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#HxChol***
+est_km_hxchol=survfit(Surv(tShock, dShock) ~ strata(HxChol),data=data)
+plot(est_km_hxchol,col=c("red","blue"), main = "KM estimate survival function for different HxChol")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#BMI*** normal range (18.5,24.9)
+summary(data$BMI)
+data$bmig[data$BMI<18.5]=1
+data$bmig[18.5<=data$BMI&data$BMI<=24.9]=2
+data$bmig[24.9<data$BMI]=3
+est_km_bmi=survfit(Surv(tShock, dShock) ~ strata(bmig),data=data)
+plot(est_km_bmi,col=c("red","blue","green"), main = "KM estimate survival function for different bmi")
+legend( "bottomleft",c("low bmi", "normal bmi", "high bmi"),lty=1, col=c("red","blue","green")) 
+
+#Sysbp*** Normal range (90,120)
+summary(data$SysBP)
+data$bpg[data$SysBP<90]=1
+data$bpg[90<=data$SysBP&data$SysBP<=120]=2
+data$bpg[120<data$SysBP]=3
+est_km_sysbp=survfit(Surv(tShock, dShock) ~ strata(bpg),data=data)
+plot(est_km_sysbp,col=c("red","blue","green"), main = "KM estimate survival function for different SysBP")
+legend( "bottomleft",c("low SysBP1", "normal SysBP", "high SysBP"),lty=1, col=c("red","blue","green")) 
+
+#DiaBP*** Normal range (60,80)
+#SysBP and DiaBP might be highly correlated)
+data$bpg2[data$DiaBP<60]=1
+data$bpg2[60<=data$DiaBP&data$DiaBP<=80]=2
+data$bpg2[80<=data$DiaBP]=3
+est_km_sysbp=survfit(Surv(tShock, dShock) ~ strata(bpg2),data=data)
+plot(est_km_sysbp,col=c("red","blue","green"), main = "KM estimate survival function for different DiaBP")
+legend( "bottomleft",c("low DiaBP", "normal DiaBP2", "high DiaBP"),lty=1, col=c("red","blue","green"))
+
+#MedAce***
+est_km_ace=survfit(Surv(tShock, dShock) ~ strata(MedAce),data=data)
+plot(est_km_ace,col=c("red","blue"), main = "KM estimate survival function for different MedAce status")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#MedBeta 
+est_km_beta=survfit(Surv(tShock, dShock) ~ strata(MedBeta),data=data)
+plot(est_km_beta,col=c("red","blue"), main = "KM estimate survival function for different MedBeta status")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#MedNitrate***  
+est_km_Nitrate =survfit(Surv(tShock, dShock) ~ strata(MedNitrate),data=data)
+plot(est_km_Nitrate,col=c("red","blue"), main = "KM estimate survival function for different MedNitrate status")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#MedDigoxin ***
+est_km_Digoxin =survfit(Surv(tShock, dShock) ~ strata(MedDigoxin),data=data)
+plot(est_km_Digoxin,col=c("red","blue"), main = "KM estimate survival function for different MedDigoxin status")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#MedAntiarr ***
+est_km_Antiarr =survfit(Surv(tShock, dShock) ~ strata(MedAntiarr),data=data)
+plot(est_km_Antiarr,col=c("red","blue"), main = "KM estimate survival function for different MedAntiarr status")
+legend( "bottom",c("No", "Yes"),lty=1, col=c("red","blue")) 
+
+#BUN, normal range (7,20) ***
+summary(data$BUN)
+data$gbun[data$BUN<7]=1
+data$gbun[7<=data$BUN&data$BUN<=20]=2
+data$gbun[20<=data$BUN]=3
+est_km_bun=survfit(Surv(tShock, dShock) ~ strata(gbun),data=data)
+plot(est_km_sysbp,col=c("red","blue","green"), main = "KM estimate survival function for different BUN")
+legend( "bottomleft",c("low BUN", "normal BUN", "high BUN"),lty=1, col=c("red","blue","green")) 
+
+#Creatinine***, normal range (0.7,1.2)
+summary(data$Creatinine)
+data$gCreatinine[data$Creatinine<0.7]=1
+data$gCreatinine[0.7<=data$Creatinine&data$Creatinine<=1.2]=2
+data$gCreatinine[1.2<data$Creatinine]=3
+est_km_Creatinine=survfit(Surv(tShock, dShock) ~ strata(gCreatinine),data=data)
+plot(est_km_Creatinine,col=c("red","blue","green"), main = "KM estimate survival function for different HR")
+legend( "bottomleft",c("low Creatinine", "normal Creatinine", "high Creatinine"),lty=1, col=c("red","blue","green")) 
+
+
+#PR***, normal range (120,200)
+summary(data$PR)
+data$gpr[data$PR<120]=1
+data$gpr[120<=data$PR&data$PR<=200]=2
+data$gpr[200<=data$PR]=3
+est_km_pr=survfit(Surv(tShock, dShock) ~ strata(gpr),data=data)
+plot(est_km_pr,col=c("red","blue","green"), main = "KM estimate survival function for different pr")
+legend( "bottomleft",c("low pr", "normal pr2", "high pr"),lty=1, col=c("red","blue","green")) 
+
+#HR ,normal (60,100)
+summary(data$HR)
+data$ghr[data$HR<60]=1
+data$ghr[60<=data$HR&data$HR<=100]=2
+data$ghr[100<data$HR]=3
+est_km_hr=survfit(Surv(tShock, dShock) ~ strata(ghr),data=data)
+plot(est_km_pr,col=c("red","blue","green"), main = "KM estimate survival function for different HR")
+legend( "bottomleft",c("low HR", "normal HR", "high HR"),lty=1, col=c("red","blue","green")) 
+
+#***QRS,normal range (70,100), most patients have high QRS
+summary(data$QRS)
+data$gqrs[data$QRS<70]=1
+data$gqrs[70<=data$QRS&data$QRS<=100]=2
+data$gqrs[100<data$QRS]=3
+est_km_qrs=survfit(Surv(tShock, dShock) ~ strata(gqrs),data=data)
+plot(est_km_qrs,col=c("red","blue","green"), main = "KM estimate survival function for different QRS")
+legend( "bottomleft",c("low QRS", "normal QRS", "high QRS"),lty=1, col=c("red","blue","green")) 
+table(data$gqrs)
+
+data$gqrs2[data$QRS<=100]=1
+data$gqrs2[100<data$QRS]=2
+est_km_qrs2=survfit(Surv(tShock, dShock) ~ strata(gqrs2),data=data)
+plot(est_km_qrs2,col=c("red","blue"), main = "KM estimate survival function for different QRS")
+legend( "bottomleft",c("QRS<=100", "QRS>100"),lty=1, col=c("red","blue"))
+
+
+#LVEF***, normal range (55,70) , less than 35%: cardiac failure
+summary(data$LVEF)
+data$glvef[data$LVEF<20]=1
+data$glvef[20<=data$LVEF]=2
+est_km_lvef =survfit(Surv(tShock, dShock) ~ strata(LVEF),data=data)
+plot(est_km_Digoxin,col=c("red","blue"), main = "KM estimate survival function for different LVEF levels")
+legend( "bottom",c("LVEF<20", "LVEF>=20"),lty=1, col=c("red","blue")) 
+```
+
+
+##################################### Model Fitting##########################################
+```{r}
+attach(data)
+
+#Estimated survival function of death
+survival_death = survfit(Surv(tDeath, dDeath) ~ 1, conf.type = "log-log")
+summary(survival_death)
+
+#Estimated survival function of shock
+survival_shock = survfit(Surv(tShock, dShock) ~ 1, conf.type = "log-log")
+summary(survival_shock)
+
+#Estimated hazard function of death
+hazard_death = muhaz(tDeath, dDeath, bw.grid = 15, bw.method = "global", b.cor = "none")
+
+#Estimated hazard function of shock
+hazard_shock = muhaz(tShock, dShock, bw.grid = 15, bw.method = "global", b.cor = "none")
+
+par(mfrow=c(2,2))
+plot(survival_death, main = "Survival function of death", xlab = "Time", 
+     ylab = "Estimated survival function of death")
+plot(survival_shock, main = "Survival function of shock", xlab = "Time", 
+     ylab = "Estimated survival function of shock")
+plot(hazard_death, main = "Kernel-smoothed estimate hazard function of death", xlab = "Time", 
+     ylab = "Estimated hazard of death")
+plot(hazard_shock, main = "Kernel-smoothed estimate hazard function of shock", xlab = "Time", 
+     ylab = "Estimated hazard of shock")
+
+detach(data)
+```
+
+```{r}
+#Fit the cox model of shock, full model
+fit0 = coxph(Surv(tShock, dShock) ~ Age + Sex + Race + Diagnosis + NYHA + HxMI + HxDiabetes 
+             + HxHTN + HxChol + BMI + SysBP + DiaBP + MedAce + MedBeta + MedNitrate + MedDiuretic
+             + MedAldactone + MedDigoxin + MedAntiarr + Sodium + BUN + Creatinine + HR + PR + QRS
+             + QTc + LVEF, data = data)
+summary(fit0)
+```
+
+```{r}
+#Based on correlation matrix and exploration, we manually select a few variables
+fit1 = coxph(Surv(tShock, dShock) ~ Age + Sex + Race + Diagnosis + NYHA + HxHTN + HxChol + BMI + DiaBP 
+             + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, data = data)
+summary(fit1)
+```
+
+```{r}
+#Stepwise variable selection based on fit0
+fit2 = step(fit0, scope = list(upper = ~ Age + Sex + Race + Diagnosis + NYHA + HxMI + HxDiabetes 
+                                + HxHTN + HxChol + BMI + SysBP + DiaBP + MedAce + MedBeta + MedNitrate 
+                                + MedDiuretic + MedAldactone + MedDigoxin + MedAntiarr + Sodium + BUN 
+                                + Creatinine + HR + PR + QRS + QTc + LVEF, 
+                                lower = ~ Age))
+summary(fit2)
+```
+
+```{r}
+#Final selected variables
+fit3 = coxph(Surv(tShock, dShock) ~ Age + Sex + Race + BMI + NYHA + HxHTN + DiaBP 
+             + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, data = data)
+summary(fit3)
+```
+
+```{r}
+#Cox-snell residual plot
+cox_snell <- function(fit) {
+  cumhaz0 <- basehaz(fit) # get the baseline hazard
+  Lambda0 <- approxfun(cumhaz0$time, cumhaz0$hazard, method = 'constant')
+  r_C <- Lambda0(fit$y[,1]) * exp(fit$linear.predictors)
+  # obtain the KM estimate of the residuals
+  km_rC <- survfit(Surv(r_C, fit$y[,2]) ~ 1)
+  
+  df <- data.frame(x = km_rC$time, y = -log(km_rC$surv), yl = -log(km_rC$upper), 
+                   yu = -log(km_rC$lower))
+  df <- df[km_rC$n.risk >= 10,] # keep the estimate when at least 10 individuals are at risk
+  
+  figure <- ggplot(df, aes(x)) +
+    geom_step(aes(y = y), colour = 'blue') + 
+    geom_step(aes(y = yu), lty = 2) + geom_step(aes(y = yl), lty = 2) + 
+    geom_line(aes(y = x), colour = 'red') + 
+    labs(title = "Cox-Snell Residuals", x = "Residual", y = "cumulative hazard") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+          axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+  
+  return(figure)
+}
+
+cox_snell(fit3)
+```
+
+```{r}
+#Fitting AFT models
+#fit4 = survreg(Surv(tShock, dShock) ~ Age + Sex + Race + Diagnosis + NYHA + HxHTN + DiaBP 
+#                  + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, data = #data, 
+#                  dist="lognormal")
+#fit5 = survreg(Surv(tShock, dShock) ~ Age + Sex + Race + Diagnosis + NYHA + HxHTN + DiaBP 
+#               + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, data = data, 
+#               dist="loglogistic")
+fit6 = survreg(Surv(tShock, dShock) ~ Age + Sex + Race + BMI + NYHA + HxHTN + DiaBP 
+               + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, data = data, 
+               dist="weibull")
+
+summary(fit6)
+```
+
+
+```{r}
+cox_snell2 <- function(fit_survreg) {
+  e_dist <- survreg.distributions[[fit_survreg$dist]]$dist # distribution of epsilon
+  e_distfunc <- survreg.distributions[[e_dist]]$density # distribution functions of epsilon, the second is the survival function
+  r_ST <- (log(fit_survreg$y[, 1]) - fit_survreg$linear.predictors) / fit_survreg$scale # standardized residual
+  r_C <- -log(e_distfunc(r_ST)[, 2]) # Cox-Snell residual
+  # obtain the KM estimate of the residuals
+  km_rC <- survfit(Surv(r_C, fit_survreg$y[,2]) ~ 1)
+  
+  df <- data.frame(x = km_rC$time, y = -log(km_rC$surv), yl = -log(km_rC$upper), 
+                   yu = -log(km_rC$lower))
+  df <- df[km_rC$n.risk >= 10,] # keep the estimate when at least 10 individuals are at risk
+  
+  figure <- ggplot(df, aes(x)) +
+    geom_step(aes(y = y), colour = 'blue') + 
+    geom_step(aes(y = yu), lty = 2) + geom_step(aes(y = yl), lty = 2) + 
+    geom_line(aes(y = x), colour = 'red') + 
+    labs(title = paste("Checking Overall Fit of the", toupper(fit_survreg$dist), "AFT Model"), x = expression(r[Ci]), y = expression(-logS(r[Ci]))) + 
+    theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+          axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+  
+  return(figure)
+}
+cox_snell2(fit4)
+cox_snell2(fit5)
+cox_snell2(fit6)
+```
+
+################################## Model Assessment ############################################
+
+```{r}
+r_M_3 = residuals(fit3_3)
+df = data.frame(risk_score = fit3_3$linear.predictors, status = data[-c(587, 673, 793, 844, 919),]$dShock, r_M = r_M_3)
+ggplot(df, aes(x = risk_score, y = r_M_3, color = status)) +
+  geom_point() + geom_smooth() + 
+  labs(title = "Martingale Residuals", x = "risk score", y = "martingale residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+```
+The straight line indicates no need for changepoint.
+
+For cox model fit3, check the proportional hazard assumption
+```{r}
+r_SF = residuals(fit3, type = "scaledsch")
+df_SF = as.data.frame(r_SF)
+obstime = sort(data$tShock[data$dShock != 0])
+```
+```{r}
+ggplot(df_SF, aes(x = obstime, y = V1)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for Age", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V2)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for Sex", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V3)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for Race", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V4)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for BMI", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V5)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for NYHA", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V6)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for HxHTN", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V7)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for DiaBP", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V8)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedAce", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V9)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedNitrate", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+```
+```{r}
+ggplot(df_SF, aes(x = obstime, y = V10)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedDigoxin", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+```
+```{r}
+ggplot(df_SF, aes(x = obstime, y = V11)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedAntiarr", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+```
+```{r}
+ggplot(df_SF, aes(x = obstime, y = V12)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for BUN", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V13)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for PR", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF, aes(x = obstime, y = V14)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for LVEF", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+```
+The proportional hazard assumption is unsatisfied for MedDigoxin, MedAntiarr
+
+Find reasons for nonproportionality of MedDigoxin & MedAntiarr
+(1). small number of outliers (|Devience|>= 3): 587, 673, 793, 844, 919
+```{r}
+r_D_fit3 = residuals(fit3, type = "deviance")
+df = data.frame(risk_score_fit3 = fit3$linear.predictors, r_D_fit3 = r_D_fit3)
+ggplot(df, aes(x = risk_score_fit3, y = r_D_fit3)) +
+  geom_point() + geom_smooth(span = 1) + 
+  labs(title = "Deviance Residuals for Coxph model", x = "linear predictor", y = "deviance residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+r_D_fit3 = r_D_fit3[r_D_fit3 >= 3 | r_D_fit3 <= -3]
+r_D_fit3
+```
+
+```{r}
+data_2 = data[-c(587,673,793,844,919),]
+fit3_2 = coxph(Surv(tShock, dShock) ~ Age + Sex + Race + Diagnosis + NYHA + HxHTN + DiaBP 
+             + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, data = data_2)
+r_SF_2 = residuals(fit3_2, type = "scaledsch")
+df_SF_2 = as.data.frame(r_SF_2)
+obstime_2 = sort(data_2$tShock[data_2$dShock != 0])
+
+ggplot(df_SF_2, aes(x = obstime_2, y = V10)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedDigoxin", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF_2, aes(x = obstime_2, y = V11)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedAntiarr", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+```
+Still significant: when sample size is large, slight departure from proportionality may be significant.
+
+(2).consider changing nonproportional covariates into stratification factors
+```{r}
+fit3_3 = coxph(Surv(tShock, dShock) ~ Age + Sex + Race + Diagnosis + NYHA + HxHTN + DiaBP 
+             + MedAce + MedNitrate + strata(MedDigoxin) + strata(MedAntiarr) + BUN + PR + LVEF, data = data_2)  
+r_SF_3 = residuals(fit3_3, type = "scaledsch") # same procedure as above to get plots
+df_SF_3 = as.data.frame(r_SF_3)
+obstime_2 = sort(data_2$tShock[data_2$dShock != 0])
+
+ggplot(df_SF_3, aes(x = obstime_2, y = V10)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedDigoxin", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+
+ggplot(df_SF_3, aes(x = obstime_2, y = V11)) + 
+  geom_point() + geom_smooth(span = 2) + 
+  labs(title = "Scaled Schoenfeld Residuals for MedAntiarr", x = "Time (months)", y = "scaled schoenfeld residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+```
+the proportional assumption holds for fit3_3
+thus the final cox model is fit3_3 = coxph(Surv(tShock, dShock) ~ Age + Sex + Race + BMI + NYHA + HxHTN + DiaBP + MedAce + MedNitrate + strata(MedDigoxin) + strata(MedAntiarr) + BUN + PR + LVEF, data = data_2) 
+
+```{r}
+func1 = function(x) {pmin(x, 80)}
+func2 = function(x) {pmin(x, 400)}
+fit3_3 = coxph(Surv(tShock, dShock) ~ Age + Sex + Race + BMI + NYHA + HxHTN + DiaBP 
+             + MedAce + MedNitrate + strata(MedDigoxin) + strata(MedAntiarr) + BUN + func1(BUN) + PR + LVEF, data = data[-c(587, 673, 793, 844, 919),])  
+```
+Just add func(BUN) and obtain the third cox model fit3_3
+```{r}
+r_M_3 = residuals(fit3_3)
+df = data.frame(x = data[-c(587, 673, 793, 844, 919),]$BUN, status = data[-c(587, 673, 793, 844, 919),]$dShock, r_M = r_M_3)
+ggplot(df, aes(x = data[-c(587, 673, 793, 844, 919),]$BUN, y = r_M_3, color = status)) +
+  geom_point() + geom_smooth() + 
+  labs(title = "Martingale Residuals", x = "BUN", y = "martingale residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+df2 = data.frame(x = data[-c(587, 673, 793, 844, 919),]$PR, status = data[-c(587, 673, 793, 844, 919),]$dShock, r_M = r_M_3)
+
+```
+
+```{r}
+
+```
+
+################################
+For the AFT model:
+1. check the overall fit of the weibull AFT model: previous plot about cox-snell residuals
+2. deviance:
+the plot shows that fit6 fits the data well
+check the outliers (|Devience|>= 3): 844, 919
+```{r}
+r_D_fit6 = residuals(fit6, type = "deviance")
+df = data.frame(risk_score_fit6 = fit6$linear.predictors, r_D_fit6 = r_D_fit6)
+ggplot(df, aes(x = risk_score_fit6, y = r_D_fit6)) +
+  geom_point() + geom_smooth(span = 1) + 
+  labs(title = "Deviance Residuals for Weibull AFT Model", x = "linear predictor", y = "deviance residual") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 13), axis.title = element_text(size = 14), 
+        axis.text.x = element_text(size = 11), axis.text.y = element_text(size = 12))
+r_D_fit6 = r_D_fit6[r_D_fit6 >= 3 | r_D_fit6 <= -3]
+r_D_fit6
+outlier_2 = data[c(844,919),]
+outlier_2
+```
+choose fit6, consider adding frailty
+```{r}
+data = data.frame(ID = 1:946, data)
+fit6 = survreg(Surv(tShock, dShock) ~ Age + Sex + Race + BMI + NYHA + HxHTN + DiaBP 
+               + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, data = data, 
+               dist= "weibull")
+fit6
+```
+Loglikelihood(fit6):-1138.2
+```{r}
+fit7 = parfm(Surv(tShock, dShock) ~ Age + Sex + Race + BMI + NYHA + HxHTN + DiaBP 
+               + MedAce + MedNitrate + MedDigoxin + MedAntiarr + BUN + PR + LVEF, cluster = "ID", data = data, dist = "weibull", frailty = "gamma")
+summary(fit7)
+```
+
+Loglikelihood(fit7): -1138.178
+```{r}
+LRT = 2*(-1138.178 + 1138.2)
+p_value = (1 - pchisq(LRT, df = 1)) / 2
+p_value
+```
+frailty effect is not significant. if use weibull AFT model, choose fit6
+Compare coxph model and weibull proportional hazard model:
+
+```{r}
+coef_cox = fit3_3$coefficients
+coef_weibull = -fit6$coefficients[2:19] / fit6$scale
+data.frame(coef_cox)
+data.frame(coef_weibull)
+```
+Compare the log-likelihood and choose the larger one / Based on coefficients above, coefficients are almost the same thus both models are reasonable.
+```{r}
+fit3_3$loglik
+fit6$loglik
+```
+choose fit3_3 as the final model.
